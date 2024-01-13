@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -892,6 +893,10 @@ func (s *Server) retainMessage(cl *Client, pk packets.Packet) {
 
 // publishToSubscribers publishes a publish packet to all subscribers with matching topic filters.
 func (s *Server) publishToSubscribers(pk packets.Packet) {
+	s.PublishToSubscribers(pk, true)
+}
+
+func (s *Server) PublishToSubscribers(pk packets.Packet, local bool) {
 	if pk.Ignore {
 		return
 	}
@@ -905,13 +910,25 @@ func (s *Server) publishToSubscribers(pk packets.Packet) {
 		pk.Expiry = pk.Created + int64(pk.Properties.MessageExpiryInterval)
 	}
 
+	sharedFilters := make(map[string]bool)
 	subscribers := s.Topics.Subscribers(pk.TopicName)
 	if len(subscribers.Shared) > 0 {
 		subscribers = s.hooks.OnSelectSubscribers(subscribers, pk)
 		if len(subscribers.SharedSelected) == 0 {
 			subscribers.SelectShared()
 		}
+
+		// records shared subscriptions for different groups
+		for _, sub := range subscribers.SharedSelected {
+			sharedFilters[sub.Filter] = false
+		}
+
 		subscribers.MergeSharedSelected()
+	} else {
+		// no shared subscription, publish directly to the cluster
+		if !strings.HasPrefix(pk.TopicName, SysPrefix) && local {
+			s.hooks.OnClusterPublish(pk, sharedFilters)
+		}
 	}
 
 	for _, inlineSubscription := range subscribers.InlineSubscriptions {
@@ -920,11 +937,22 @@ func (s *Server) publishToSubscribers(pk packets.Packet) {
 
 	for id, subs := range subscribers.Subscriptions {
 		if cl, ok := s.Clients.Get(id); ok {
-			_, err := s.publishToClient(cl, subs, pk)
-			if err != nil {
+			if _, err := s.publishToClient(cl, subs, pk); err != nil {
+				if strings.HasPrefix(subs.Filter, "$share") {
+					sharedFilters[subs.Filter] = false
+				}
 				s.Log.Debug("failed publishing packet", "error", err, "client", cl.ID, "packet", pk)
+			} else {
+				if strings.HasPrefix(subs.Filter, "$share") {
+					sharedFilters[subs.Filter] = true
+				}
 			}
 		}
+	}
+
+	// publish results with local shared subscriptions
+	if len(sharedFilters) > 0 && local {
+		s.hooks.OnClusterPublish(pk, sharedFilters)
 	}
 }
 

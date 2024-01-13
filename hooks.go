@@ -55,6 +55,7 @@ const (
 	StoredInflightMessages
 	StoredRetainedMessages
 	StoredSysInfo
+	OnClusterPublish
 )
 
 var (
@@ -90,6 +91,7 @@ type Hook interface {
 	OnUnsubscribe(cl *Client, pk packets.Packet) packets.Packet
 	OnUnsubscribed(cl *Client, pk packets.Packet)
 	OnPublish(cl *Client, pk packets.Packet) (packets.Packet, error)
+	OnClusterPublish(pk packets.Packet, sharedFilters map[string]bool)
 	OnPublished(cl *Client, pk packets.Packet)
 	OnPublishDropped(cl *Client, pk packets.Packet)
 	OnRetainMessage(cl *Client, pk packets.Packet, r int64)
@@ -672,6 +674,15 @@ func (h *Hooks) OnACLCheck(cl *Client, topic string, write bool) bool {
 	return false
 }
 
+func (h *Hooks) OnClusterPublish(pk packets.Packet, sharedFilters map[string]bool) {
+	for _, hook := range h.GetAll() {
+		if hook.Provides(OnClusterPublish) {
+			hook.OnClusterPublish(pk, sharedFilters)
+		}
+	}
+
+}
+
 // HookBase provides a set of default methods for each hook. It should be embedded in
 // all hooks.
 type HookBase struct {
@@ -827,6 +838,9 @@ func (h *HookBase) OnClientExpired(cl *Client) {}
 
 // OnRetainedExpired is called when a retained message for a topic has expired.
 func (h *HookBase) OnRetainedExpired(topic string) {}
+
+// OnClusterPublish is called when a client has published a message to cluster.
+func (h *HookBase) OnClusterPublish(pk packets.Packet, sharedFilters map[string]bool) {}
 
 // StoredClients returns all clients from a store.
 func (h *HookBase) StoredClients() (v []storage.Client, err error) {
