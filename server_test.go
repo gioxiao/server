@@ -96,24 +96,24 @@ func (h *DelayHook) OnDisconnect(cl *Client, err error, expire bool) {
 }
 
 func newServer() *Server {
-	cc := *DefaultServerCapabilities
+	cc := NewDefaultServerCapabilities()
 	cc.MaximumMessageExpiryInterval = 0
 	cc.ReceiveMaximum = 0
 	s := New(&Options{
 		Logger:       logger,
-		Capabilities: &cc,
+		Capabilities: cc,
 	})
 	_ = s.AddHook(new(AllowHook), nil)
 	return s
 }
 
 func newServerWithInlineClient() *Server {
-	cc := *DefaultServerCapabilities
+	cc := NewDefaultServerCapabilities()
 	cc.MaximumMessageExpiryInterval = 0
 	cc.ReceiveMaximum = 0
 	s := New(&Options{
 		Logger:       logger,
-		Capabilities: &cc,
+		Capabilities: cc,
 		InlineClient: true,
 	})
 	_ = s.AddHook(new(AllowHook), nil)
@@ -125,7 +125,7 @@ func TestOptionsSetDefaults(t *testing.T) {
 	opts.ensureDefaults()
 
 	require.Equal(t, defaultSysTopicInterval, opts.SysTopicResendInterval)
-	require.Equal(t, DefaultServerCapabilities, opts.Capabilities)
+	require.Equal(t, NewDefaultServerCapabilities(), opts.Capabilities)
 
 	opts = new(Options)
 	opts.ensureDefaults()
@@ -1529,10 +1529,10 @@ func TestServerProcessPublishACLCheckDeny(t *testing.T) {
 
 	for _, tx := range tt {
 		t.Run(tx.name, func(t *testing.T) {
-			cc := *DefaultServerCapabilities
+			cc := NewDefaultServerCapabilities()
 			s := New(&Options{
 				Logger:       logger,
-				Capabilities: &cc,
+				Capabilities: cc,
 			})
 			_ = s.AddHook(new(DenyHook), nil)
 			_ = s.Serve()
@@ -1907,6 +1907,7 @@ func TestPublishToClientSubscriptionDowngradeQos(t *testing.T) {
 }
 
 func TestPublishToClientExceedClientWritesPending(t *testing.T) {
+	var sendQuota uint16 = 5
 	s := newServer()
 
 	_, w := net.Pipe()
@@ -1917,9 +1918,12 @@ func TestPublishToClientExceedClientWritesPending(t *testing.T) {
 		options: &Options{
 			Capabilities: &Capabilities{
 				MaximumClientWritesPending: 3,
+				maximumPacketID:            10,
 			},
 		},
 	})
+	cl.Properties.Props.ReceiveMaximum = sendQuota
+	cl.State.Inflight.ResetSendQuota(int32(cl.Properties.Props.ReceiveMaximum))
 
 	s.Clients.Add(cl)
 
@@ -1928,9 +1932,20 @@ func TestPublishToClientExceedClientWritesPending(t *testing.T) {
 		atomic.AddInt32(&cl.State.outboundQty, 1)
 	}
 
+	id, _ := cl.NextPacketID()
+	cl.State.Inflight.Set(packets.Packet{PacketID: uint16(id)})
+	cl.State.Inflight.DecreaseSendQuota()
+	sendQuota--
+
 	_, err := s.publishToClient(cl, packets.Subscription{Filter: "a/b/c", Qos: 2}, packets.Packet{})
 	require.Error(t, err)
 	require.ErrorIs(t, packets.ErrPendingClientWritesExceeded, err)
+	require.Equal(t, int32(sendQuota), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+
+	_, err = s.publishToClient(cl, packets.Subscription{Filter: "a/b/c", Qos: 2}, packets.Packet{FixedHeader: packets.FixedHeader{Qos: 1}})
+	require.Error(t, err)
+	require.ErrorIs(t, packets.ErrPendingClientWritesExceeded, err)
+	require.Equal(t, int32(sendQuota), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
 }
 
 func TestPublishToClientServerTopicAlias(t *testing.T) {
@@ -1986,6 +2001,22 @@ func TestPublishToClientMqtt5RetainAsPublishedTrueLeverageNoConn(t *testing.T) {
 	require.ErrorIs(t, err, packets.CodeDisconnect)
 }
 
+func TestPublishToClientExceedMaximumInflight(t *testing.T) {
+	const MaxInflight uint16 = 5
+	s := newServer()
+	cl, _, _ := newTestClient()
+	s.Options.Capabilities.MaximumInflight = MaxInflight
+	cl.ops.options.Capabilities.MaximumInflight = MaxInflight
+	for i := uint16(0); i < MaxInflight; i++ {
+		cl.State.Inflight.Set(packets.Packet{PacketID: i})
+	}
+
+	_, err := s.publishToClient(cl, packets.Subscription{Filter: "a/b/c", Qos: 1}, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.Error(t, err)
+	require.ErrorIs(t, err, packets.ErrQuotaExceeded)
+	require.Equal(t, int64(1), atomic.LoadInt64(&s.Info.InflightDropped))
+}
+
 func TestPublishToClientExhaustedPacketID(t *testing.T) {
 	s := newServer()
 	cl, _, _ := newTestClient()
@@ -1996,6 +2027,7 @@ func TestPublishToClientExhaustedPacketID(t *testing.T) {
 	_, err := s.publishToClient(cl, packets.Subscription{Filter: "a/b/c", Qos: 1}, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
 	require.Error(t, err)
 	require.ErrorIs(t, err, packets.ErrQuotaExceeded)
+	require.Equal(t, int64(1), atomic.LoadInt64(&s.Info.InflightDropped))
 }
 
 func TestPublishToClientACLNotAuthorized(t *testing.T) {
@@ -3131,22 +3163,22 @@ func TestServerLoadClients(t *testing.T) {
 		{ID: "v3-clean", ProtocolVersion: 4, Clean: true},
 		{ID: "v3-not-clean", ProtocolVersion: 4, Clean: false},
 		{
-			ID: "v5-clean",
+			ID:              "v5-clean",
 			ProtocolVersion: 5,
-			Clean: true,
+			Clean:           true,
 			Properties: storage.ClientProperties{
 				SessionExpiryInterval: 10,
 			},
 		},
 		{
-			ID: "v5-expire-interval-0",
+			ID:              "v5-expire-interval-0",
 			ProtocolVersion: 5,
 			Properties: storage.ClientProperties{
 				SessionExpiryInterval: 0,
 			},
 		},
 		{
-			ID: "v5-expire-interval-not-0",
+			ID:              "v5-expire-interval-not-0",
 			ProtocolVersion: 5,
 			Properties: storage.ClientProperties{
 				SessionExpiryInterval: 10,
@@ -3388,10 +3420,9 @@ func TestLoadServerInfoRestoreOnRestart(t *testing.T) {
 	require.Equal(t, int64(60), s.Info.BytesReceived)
 }
 
-func TestAtomicItoa(t *testing.T) {
+func TestItoa(t *testing.T) {
 	i := int64(22)
-	ip := &i
-	require.Equal(t, "22", AtomicItoa(ip))
+	require.Equal(t, "22", Int64toa(i))
 }
 
 func TestServerSubscribe(t *testing.T) {
