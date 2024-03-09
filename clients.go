@@ -150,7 +150,7 @@ type ClientState struct {
 	disconnected    int64                // the time the client disconnected in unix time, for calculating expiry
 	outbound        chan *packets.Packet // queue for pending outbound packets
 	endOnce         sync.Once            // only end once
-	IsTakenOver     uint32               // used to identify orphaned clients
+	isTakenOver     uint32               // used to identify orphaned clients
 	packetID        uint32               // the current highest packetID
 	open            context.Context      // indicate that the client is open for packet exchange
 	cancelOpen      context.CancelFunc   // cancel function for open context
