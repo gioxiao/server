@@ -20,13 +20,27 @@ import (
 // HTTPStats is a listener for presenting the server $SYS stats on a JSON http endpoint.
 type HTTPStats struct {
 	sync.RWMutex
-	id      string       // the internal id of the listener
-	address string       // the network address to bind to
-	config  *Config      // configuration values for the listener
-	listen  *http.Server // the http server
-	sysInfo *system.Info // pointers to the server data
-	log     *slog.Logger // server logger
-	end     uint32       // ensure the close methods are only called once
+	id       string       // the internal id of the listener
+	address  string       // the network address to bind to
+	config   *Config      // configuration values for the listener
+	listen   *http.Server // the http server
+	sysInfo  *system.Info // pointers to the server data
+	end      uint32       // ensure the close methods are only called once
+	handlers map[string]Handler
+}
+
+type Handler = func(http.ResponseWriter, *http.Request)
+
+func NewHTTP(id, address string, config *Config, handlers map[string]Handler) *HTTPStats {
+	if config == nil {
+		config = new(Config)
+	}
+	return &HTTPStats{
+		id:       id,
+		address:  address,
+		config:   config,
+		handlers: handlers,
+	}
 }
 
 // NewHTTPStats initialises and returns a new HTTP listener, listening on an address.
@@ -62,10 +76,16 @@ func (l *HTTPStats) Protocol() string {
 }
 
 // Init initializes the listener.
-func (l *HTTPStats) Init(log *slog.Logger) error {
-	l.log = log
+func (l *HTTPStats) Init(_ *slog.Logger) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", l.jsonHandler)
+	if len(l.handlers) > 0 {
+		for path, handler := range l.handlers {
+			mux.HandleFunc(path, handler)
+		}
+	} else {
+		mux.HandleFunc("/", l.jsonHandler)
+	}
+
 	l.listen = &http.Server{
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
@@ -82,17 +102,10 @@ func (l *HTTPStats) Init(log *slog.Logger) error {
 
 // Serve starts listening for new connections and serving responses.
 func (l *HTTPStats) Serve(establish EstablishFn) {
-
-	var err error
 	if l.listen.TLSConfig != nil {
-		err = l.listen.ListenAndServeTLS("", "")
+		_ = l.listen.ListenAndServeTLS("", "")
 	} else {
-		err = l.listen.ListenAndServe()
-	}
-
-	// After the listener has been shutdown, no need to print the http.ErrServerClosed error.
-	if err != nil && atomic.LoadUint32(&l.end) == 0 {
-		l.log.Error("failed to serve.", "error", err, "listener", l.id)
+		_ = l.listen.ListenAndServe()
 	}
 }
 
