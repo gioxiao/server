@@ -246,7 +246,7 @@ func (s *Server) NewClient(c net.Conn, listener string, id string, inline bool) 
 	if inline { // inline clients bypass acl and some validity checks.
 		cl.Net.Inline = true
 		// By default, we don't want to restrict developer publishes,
-		// but if you do, reset this after creating inline client.
+		// but if you do, rest this after creating inline client.
 		cl.State.Inflight.ResetReceiveQuota(math.MaxInt32)
 	}
 
