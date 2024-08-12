@@ -2,11 +2,10 @@ package rest
 
 import (
 	"encoding/json"
-	"github.com/mochi-mqtt/server/v2"
+	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/packets"
 	"net/http"
 	"slices"
-	"strings"
 )
 
 const (
@@ -67,8 +66,7 @@ func (s *Rest) getOnlineCount(w http.ResponseWriter, r *http.Request) {
 // getClient return a client information
 // GET api/v1/mqtt/clients/{id}
 func (s *Rest) getClient(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/clients/")
-	id := strings.Trim(path, "/")
+	id := r.PathValue("id")
 	if cl, ol := s.server.Clients.Get(id); ol {
 		Ok(w, genClient(cl))
 	} else {
@@ -97,8 +95,7 @@ func (s *Rest) publishMessage(w http.ResponseWriter, r *http.Request) {
 // kickClient disconnect the client and add it to the blacklist
 // POST api/v1/mqtt/blacklist/{id}
 func (s *Rest) kickClient(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/blacklist/")
-	cid := strings.Trim(path, "/")
+	cid := r.PathValue("id")
 	if !slices.Contains(s.server.Blacklist, cid) {
 		s.server.Blacklist = append(s.server.Blacklist, cid)
 	}
@@ -113,8 +110,7 @@ func (s *Rest) kickClient(w http.ResponseWriter, r *http.Request) {
 // blanchClient remove from the blacklist
 // DELETE api/v1/mqtt/blacklist/{id}
 func (s *Rest) blanchClient(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/blacklist/")
-	cid := strings.Trim(path, "/")
+	cid := r.PathValue("id")
 	if slices.Contains(s.server.Blacklist, cid) {
 		slices.DeleteFunc(s.server.Blacklist, func(s string) bool { return s == cid })
 		Ok(w, cid)
